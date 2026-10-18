@@ -1,3 +1,10 @@
 .env
 __pycache__/
 .venv/
+*.py[cod]
+.vscode/
+# Local secrets and database files
+.env.*
+!.env.example
+*.db
+*.sqlite3

@@ -2,15 +2,20 @@ import logging
 import uuid
 
 from fastapi import FastAPI, HTTPException
-
 from app.database import get_postgres_cursor
 from app.graph import (
     find_related_claims,
     get_neo4j_driver,
     link_related_claims,
     save_claim_graph,
+    update_claim_status,
 )
 from app.schemas import ClaimCreate
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +24,7 @@ app = FastAPI(title="InsurTech Claims PoC")
 
 @app.get("/health")
 def health_check():
+    logger.info("Health check endpoint was called")
     return {"status": "ok", "service": "claims-api"}
 
 
@@ -55,6 +61,8 @@ def neo4j_health():
 def submit_claim(claim: ClaimCreate):
     """Validate a claim, save it in PostgreSQL, then record it in Neo4j."""
     claim_number = "CLM-" + uuid.uuid4().hex[:8].upper()
+
+    logger.info("Claim submission started: %s", claim_number)
 
     # ---- Part 1: PostgreSQL (the official record) ----
     try:
@@ -114,6 +122,12 @@ def submit_claim(claim: ClaimCreate):
             )
             claim_id, claim_status, created_at = cur.fetchone()
 
+            logger.info(
+                "Claim %s saved in PostgreSQL with status %s",
+                 claim_number,
+                 claim_status,
+            )
+
     except HTTPException:
         # Our own errors (404, 400): pass them through unchanged
         raise
@@ -147,6 +161,9 @@ def submit_claim(claim: ClaimCreate):
             link_related_claims(
                 claim_number, [item["claim_number"] for item in related_claims]
             )
+
+        logger.info("Claim %s successfully synchronized with Neo4j", claim_number)
+        
     except Exception:
         graph_synced = False
         logger.exception("Claim %s saved in PostgreSQL but Neo4j step failed", claim_number)
@@ -185,6 +202,22 @@ def submit_claim(claim: ClaimCreate):
             raise HTTPException(
                 status_code=503,
                 detail=f"Claim {claim_number} was saved but its status update failed: {error}",
+            )
+
+        # Keep Neo4j's claim status in sync with PostgreSQL.
+    if graph_synced and final_status != claim_status:
+        try:
+            status_updated = update_claim_status(claim_number, final_status)
+            if not status_updated:
+                graph_synced = False
+                logger.error(
+                    "Claim %s was not found in Neo4j during status update",
+                    claim_number,
+                )
+        except Exception:
+            graph_synced = False
+            logger.exception(
+                "Could not update Neo4j status for claim %s", claim_number
             )
 
     return {

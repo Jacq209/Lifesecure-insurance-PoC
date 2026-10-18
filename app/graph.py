@@ -111,3 +111,20 @@ def link_related_claims(claim_number, related_claim_numbers):
     with driver.session() as session:
         session.run(query, parameters).consume()
 
+
+def update_claim_status(claim_number, status):
+    """Update an existing claim's status in Neo4j."""
+    query = """
+    MATCH (cl:Claim {claim_number: $claim_number})
+    SET cl.status = $status
+    RETURN cl.claim_number AS claim_number
+    """
+    driver = get_neo4j_driver()
+    with driver.session() as session:
+        result = session.run(
+            query,
+            {"claim_number": claim_number, "status": status},
+        )
+        return result.single() is not None
+
+
